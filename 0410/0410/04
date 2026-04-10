@@ -1,0 +1,275 @@
+// 像素风贪吃蛇（Windows 控制台）- 正方形优化版
+// 控制：方向键 或 WASD，按 Q 退出，游戏结束后按 R 重启
+
+#include <windows.h>
+#include <conio.h>
+#include <iostream>
+#include <deque>
+#include <vector>
+#include <ctime>
+#include <cstdlib>
+#include <string>
+#include <cstdio>
+
+using namespace std;
+
+// 核心修改：横向用2字符表示1个单位，保证视觉正方形
+const int CELL_WIDTH = 2;  // 每个格子横向占2个字符
+const int GRID_WIDTH = 40; // 游戏区域横向格子数（原WIDTH）
+const int GRID_HEIGHT = 20;// 游戏区域纵向格子数（原HEIGHT）
+const int SCREEN_WIDTH = GRID_WIDTH * CELL_WIDTH; // 控制台总宽度
+
+enum Dir { UP, DOWN, LEFT, RIGHT };
+
+struct Point { int x, y; };
+
+void setCursorPos(int x, int y) {
+    COORD coord = { (SHORT)x, (SHORT)y };
+    SetConsoleCursorPosition(GetStdHandle(STD_OUTPUT_HANDLE), coord);
+}
+
+void setColor(WORD attr); // forward declaration for menu
+
+// 显示开始菜单并返回速度（ms）。返回 -1 表示退出。
+int showStartMenu() {
+    const vector<string> options = { "简单（速度慢）", "中等（速度中）", "困难（速度快）" };
+    const vector<int> speeds = { 160, 100, 40 };
+    int sel = 1; // 默认中等
+
+    while (true) {
+        setCursorPos(0, 0);
+        setColor(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+        cout << "==== 像素贪吃蛇 =====" << string(SCREEN_WIDTH - 20, ' ') << '\n';
+        setColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+        cout << "请选择难度（上下或 WS 切换，回车确认，Q 退出）：" << string(SCREEN_WIDTH - 40, ' ') << '\n';
+
+        for (size_t i = 0; i < options.size(); ++i) {
+            if ((int)i == sel) setColor(FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+            else setColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+            // 居中显示选项
+            int pad = (SCREEN_WIDTH - (int)options[i].size()) / 2;
+            cout << string(max(0, pad - 1), ' ') << options[i] << '\n';
+        }
+
+        // 清余行
+        for (int i = 0; i < GRID_HEIGHT - 6; ++i) cout << '\n';
+
+        // 输入处理
+        int ch = _getch();
+        if (ch == 0 || ch == 224) {
+            int code = _getch();
+            if (code == 72 || code == 75) { // up or left
+                sel = (sel - 1 + (int)options.size()) % (int)options.size();
+            }
+            else if (code == 80 || code == 77) { // down or right
+                sel = (sel + 1) % (int)options.size();
+            }
+        }
+        else {
+            char c = (char)ch;
+            if (c == '\r') return speeds[sel];
+            if (c == 'w' || c == 'W') sel = (sel - 1 + (int)options.size()) % (int)options.size();
+            else if (c == 's' || c == 'S') sel = (sel + 1) % (int)options.size();
+            else if (c == 'q' || c == 'Q') return -1;
+        }
+    }
+}
+
+void setColor(WORD attr) {
+    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), attr);
+}
+
+int randRange(int a, int b) { return a + rand() % (b - a + 1); }
+
+bool pointOnSnake(const deque<Point>& snake, const Point& p) {
+    for (auto& s : snake) if (s.x == p.x && s.y == p.y) return true;
+    return false;
+}
+
+void placeFruit(Point& fruit, const deque<Point>& snake) {
+    do {
+        fruit.x = randRange(1, GRID_WIDTH - 2);
+        fruit.y = randRange(1, GRID_HEIGHT - 2);
+    } while (pointOnSnake(snake, fruit));
+}
+
+void draw(const deque<Point>& snake, const Point& fruit, int score, int comboMul, unsigned long long lastEatMs) {
+    setCursorPos(0, 0);
+    // Top info
+    setColor(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+    // show score and combo info
+    unsigned long long now = GetTickCount64();
+    unsigned long long rem = 0;
+    if (lastEatMs != 0 && now > lastEatMs && now - lastEatMs < 5000) rem = 5000 - (now - lastEatMs);
+    cout << "Score: " << score << "    (Arrow keys or WASD to move, Q to quit)" << string(4, ' ');
+    if (comboMul > 1) {
+        setColor(FOREGROUND_RED | FOREGROUND_INTENSITY);
+        cout << " Combo x" << comboMul << " ";
+        setColor(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+    }
+    if (rem > 0) {
+        // show remaining combo time in seconds with one decimal
+        char buf[32];
+        sprintf_s(buf, sizeof(buf), "(%.1fs)", rem / 1000.0);
+        cout << buf;
+    }
+    cout << string(max(0, SCREEN_WIDTH - 40 - 12), ' ') << '\n';
+
+    for (int y = 0; y < GRID_HEIGHT; ++y) {
+        for (int x = 0; x < GRID_WIDTH; ++x) {
+            // borders
+            if (y == 0 || y == GRID_HEIGHT - 1 || x == 0 || x == GRID_WIDTH - 1) {
+                setColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+                cout << "██"; // 2字符宽边框，保证正方形
+                continue;
+            }
+
+            bool drawn = false;
+            // fruit
+            if (x == fruit.x && y == fruit.y) {
+                setColor(FOREGROUND_RED | FOREGROUND_INTENSITY);
+                cout << "●"; // 2字符宽果实，正方形
+                continue;
+            }
+
+            // snake
+            for (size_t i = 0; i < snake.size(); ++i) {
+                if (snake[i].x == x && snake[i].y == y) {
+                    if (i == 0) setColor(FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+                    else setColor(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+                    cout << "██"; // 2字符宽蛇身，完美正方形
+                    drawn = true;
+                    break;
+                }
+            }
+            if (!drawn) {
+                setColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+                cout << "  "; // 2字符宽空白，对齐
+            }
+        }
+        cout << '\n';
+    }
+}
+
+int main() {
+    srand((unsigned)time(NULL));
+
+    // Hide cursor
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_CURSOR_INFO cursorInfo;
+    GetConsoleCursorInfo(hOut, &cursorInfo);
+    cursorInfo.bVisible = FALSE;
+    SetConsoleCursorInfo(hOut, &cursorInfo);
+
+    // 适配新的屏幕宽度，避免滚动
+    SMALL_RECT r = { 0, 0, (SHORT)(SCREEN_WIDTH - 1), (SHORT)(GRID_HEIGHT) };
+    COORD bufferSize = { (SHORT)SCREEN_WIDTH, (SHORT)(GRID_HEIGHT + 1) };
+    SetConsoleScreenBufferSize(hOut, bufferSize);
+    SetConsoleWindowInfo(hOut, TRUE, &r);
+
+    bool running = true;
+    while (running) {
+        int speed = showStartMenu();
+        if (speed < 0) break; // user chose to quit from menu
+        deque<Point> snake;
+        snake.push_back({ GRID_WIDTH / 2, GRID_HEIGHT / 2 });
+        snake.push_back({ GRID_WIDTH / 2 - 1, GRID_HEIGHT / 2 });
+        snake.push_back({ GRID_WIDTH / 2 - 2, GRID_HEIGHT / 2 });
+
+        Dir dir = RIGHT;
+        Point fruit;
+        placeFruit(fruit, snake);
+        int score = 0;
+        bool dead = false;
+        // combo multiplier mechanism
+        int comboMul = 1;
+        unsigned long long lastEatMs = 0; // ms timestamp of last eaten fruit
+
+        // Initial draw to set up screen
+        draw(snake, fruit, score, comboMul, lastEatMs);
+
+        while (!dead) {
+            // input
+            if (_kbhit()) {
+                int ch = _getch();
+                if (ch == 0 || ch == 224) { // special keys
+                    int code = _getch();
+                    if (code == 72 && dir != DOWN) dir = UP;        // up arrow
+                    else if (code == 80 && dir != UP) dir = DOWN;   // down arrow
+                    else if (code == 75 && dir != RIGHT) dir = LEFT; // left arrow
+                    else if (code == 77 && dir != LEFT) dir = RIGHT; // right arrow
+                }
+                else {
+                    char c = (char)ch;
+                    if (c == 'w' || c == 'W') { if (dir != DOWN) dir = UP; }
+                    else if (c == 's' || c == 'S') { if (dir != UP) dir = DOWN; }
+                    else if (c == 'a' || c == 'A') { if (dir != RIGHT) dir = LEFT; }
+                    else if (c == 'd' || c == 'D') { if (dir != LEFT) dir = RIGHT; }
+                    else if (c == 'q' || c == 'Q') return 0;
+                }
+            }
+
+            // move
+            Point head = snake.front();
+            Point newHead = head;
+            if (dir == UP) newHead.y -= 1;
+            else if (dir == DOWN) newHead.y += 1;
+            else if (dir == LEFT) newHead.x -= 1;
+            else if (dir == RIGHT) newHead.x += 1;
+
+            // collisions
+            if (newHead.x <= 0 || newHead.x >= GRID_WIDTH - 1 || newHead.y <= 0 || newHead.y >= GRID_HEIGHT - 1) {
+                dead = true; // hit wall
+            }
+            else if (pointOnSnake(snake, newHead)) {
+                dead = true; // hit self
+            }
+            else {
+                snake.push_front(newHead);
+                if (newHead.x == fruit.x && newHead.y == fruit.y) {
+                    // combo: if within 5s of last fruit, double reward; otherwise reset
+                    unsigned long long now = GetTickCount64();
+                    if (lastEatMs != 0 && now - lastEatMs <= 5000) {
+                        comboMul *= 2;
+                    }
+                    else {
+                        comboMul = 1;
+                    }
+                    score += 10 * comboMul;
+                    lastEatMs = now;
+                    // speed up slightly
+                    if (speed > 35) speed -= 3;
+                    placeFruit(fruit, snake);
+                }
+                else {
+                    snake.pop_back();
+                }
+            }
+
+            draw(snake, fruit, score, comboMul, lastEatMs);
+
+            Sleep(speed);
+        }
+
+        // game over display
+        setCursorPos(0, GRID_HEIGHT + 2);
+        setColor(FOREGROUND_RED | FOREGROUND_INTENSITY);
+        cout << "GAME OVER! Score: " << score << "    Press R to restart or Q to quit." << string(10, ' ') << endl;
+
+        // wait for R or Q
+        while (true) {
+            int ch = _getch();
+            if (ch == 0 || ch == 224) { (void)_getch(); continue; }
+            char c = (char)ch;
+            if (c == 'r' || c == 'R') break; // restart outer loop
+            if (c == 'q' || c == 'Q') { running = false; break; }
+        }
+    }
+
+    // restore cursor
+    cursorInfo.bVisible = TRUE;
+    SetConsoleCursorInfo(hOut, &cursorInfo);
+    setColor(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+    setCursorPos(0, GRID_HEIGHT + 4);
+    return 0;
+}
